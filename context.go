@@ -23,6 +23,7 @@ import (
 	"github.com/pkg/errors"
 	"reflect"
 	"strings"
+	"sync"
 )
 
 /**
@@ -31,119 +32,83 @@ import (
 
 
 type context struct {
-	instances []interface{}
-	beansByName map[string][]interface{}
-	beansByType map[reflect.Type]interface{}
+
+	/**
+		All instances scanned on creation of context.
+	 */
+	core []interface{}
+
+	beansByName map[string][]*bean
+	beansByType map[reflect.Type]*bean
+
+	/**
+		Cache bean descriptions for Inject calls in runtime
+	 */
+	runtimeCache   sync.Map  // key is reflect.Type (classPtr), value is *beanDef
 }
 
-type injection struct {
-	bean      interface{}
-	value     reflect.Value
-	class     reflect.Type
-	fieldNum  int
-	fieldName string
-	fieldType reflect.Type
-}
-
-type impl struct {
-	bean      interface{}
-	valuePtr     reflect.Value
-	classPtr     reflect.Type
-	// this is a list of types visited in fields
-	notImplements  []reflect.Type
-}
-
-func (t *impl) implements(ifaceType reflect.Type) bool {
-	for _, ni := range t.notImplements {
-		if ni == ifaceType {
-			return false
-		}
-	}
-	return t.classPtr.Implements(ifaceType)
-}
-
-func (t *injection) inject(ref *impl) {
-	field := t.value.Field(t.fieldNum)
-	field.Set(ref.valuePtr)
-}
-
-func (t *injection) String() string {
-	return fmt.Sprintf(" %v$%s ", t.class, t.fieldName)
-}
 
 func Create(scan... interface{}) (Context, error) {
 
-	beansByName := make(map[string][]interface{})
-	beansByType := make(map[reflect.Type]interface{})
+	beansByName := make(map[string][]*bean)
+	beansByType := make(map[reflect.Type]*bean)
 
-	instances := make(map[reflect.Type]*impl)
+	cache := make(map[reflect.Type]*bean)
 	pointers := make(map[reflect.Type][]*injection)
 	interfaces := make(map[reflect.Type][]*injection)
 
 	// scan
-	for i, instance := range scan {
-		if instance == nil {
-			return nil, errors.Errorf("null instances are not allowed, position %d", i)
+	for i, obj := range scan {
+		if obj == nil {
+			return nil, errors.Errorf("null cache are not allowed on position %d", i)
 		}
-		classPtr := reflect.TypeOf(instance)
+		classPtr := reflect.TypeOf(obj)
+		if Verbose {
+			fmt.Printf("Instance %v\n", classPtr)
+		}
 		if classPtr.Kind() != reflect.Ptr {
-			return nil, errors.Errorf("non-pointer instances are not allowed, position %d, type %v", i, classPtr)
+			return nil, errors.Errorf("non-pointer instance is not allowed on position %d of type '%v'", i, classPtr)
 		}
-		if already, ok := instances[classPtr]; ok {
-			return nil, errors.Errorf("repeated instance in pos %d with type %v, visited %v", i, classPtr, already)
+		if already, ok := cache[classPtr]; ok {
+			return nil, errors.Errorf("repeated instance on position %d of type '%v' visited as '%v'", i, classPtr, already.beanDef.classPtr)
 		}
-		var notImplements []reflect.Type
-		valuePtr := reflect.ValueOf(instance)
-		value := valuePtr.Elem()
-		class := classPtr.Elem()
-		for j := 0; j < class.NumField(); j++ {
-			field := class.Field(j)
-			if field.Name == field.Type.Name() {
-				notImplements = append(notImplements, field.Type)
+		bean, err := investigate(obj, classPtr)
+		if err != nil {
+			return nil, err
+		}
+		for _, inject := range bean.beanDef.fields {
+			if Verbose {
+				fmt.Printf("	Field %v\n", inject.fieldType)
 			}
-			if field.Tag == "inject" {
-				ic := &injection {
-					bean: instance,
-					value: value,
-					class: class,
-					fieldNum: j,
-					fieldName: field.Name,
-					fieldType: field.Type,
-				}
-				switch field.Type.Kind() {
-				case reflect.Ptr:
-					pointers[field.Type] = append(pointers[field.Type], ic)
-				case reflect.Interface:
-					interfaces[field.Type] = append(interfaces[field.Type], ic)
-				default:
-					return nil, errors.Errorf("not a pointer or interface field type '%v' on position %d in %v", field.Type, i, value.Type())
-				}
-
+			switch inject.fieldType.Kind() {
+			case reflect.Ptr:
+				pointers[inject.fieldType] = append(pointers[inject.fieldType], inject)
+			case reflect.Interface:
+				interfaces[inject.fieldType] = append(interfaces[inject.fieldType], inject)
+			default:
+				return nil, errors.Errorf("injecting not a pointer or interface on field type '%v' at position %d in %v", inject.fieldType, i, classPtr)
 			}
 		}
-		instances[classPtr] = &impl {
-			bean: instance,
-			valuePtr: valuePtr,
-			classPtr: classPtr,
-			notImplements: notImplements,
-		}
+		cache[classPtr] = bean
 	}
 
 	// direct match
 	var found []reflect.Type
 	for requiredType, injects := range pointers {
-		if direct, ok := instances[requiredType]; ok {
+		if direct, ok := cache[requiredType]; ok {
 
-			beansByType[requiredType] = direct.bean
+			beansByType[requiredType] = direct
 			name := requiredType.String()
-			beansByName[name] = append(beansByName[name], direct.bean)
+			beansByName[name] = append(beansByName[name], direct)
 
 			if Verbose {
-				fmt.Printf("Inject %v by pointer instance %v in to %+v\n", requiredType, direct.classPtr, injects)
+				fmt.Printf("Inject '%v' by pointer '%v' in to %+v\n", requiredType, direct.beanDef.classPtr, injects)
 			}
 
 			for _, inject := range injects {
-				inject.inject(direct)
+				if err := inject.inject(direct); err != nil {
+					return nil, err
+				}
 			}
 			found = append(found, requiredType)
 		}
@@ -154,24 +119,25 @@ func Create(scan... interface{}) (Context, error) {
 			delete(pointers, f)
 		}
 		var out strings.Builder
-		out.WriteString("can not find candidates for those types: ")
+		out.WriteString("can not find candidates for those types: [")
 		first := true
 		for requiredType, injects := range pointers {
 			if !first {
 				out.WriteString(";")
 			}
 			first = false
-			out.WriteString("type '")
+			out.WriteString("'")
 			out.WriteString(requiredType.String())
 			out.WriteRune('\'')
 			for i, inject := range injects {
 				if i > 0 {
 					out.WriteString(", ")
 				}
-				out.WriteString(" - required by ")
+				out.WriteString(" required by ")
 				out.WriteString(inject.String())
 			}
 		}
+		out.WriteString("]")
 		return nil, errors.New(out.String())
 	}
 
@@ -179,58 +145,109 @@ func Create(scan... interface{}) (Context, error) {
 	for ifaceType, injects := range interfaces {
 
 		var candidates []reflect.Type
-		for serviceTyp, service := range instances {
-			if service.implements(ifaceType) {
+		for serviceTyp, service := range cache {
+			if service.beanDef.implements(ifaceType) {
 				candidates = append(candidates, serviceTyp)
 			}
 		}
 
 		switch len(candidates) {
 		case 0:
-			return nil, errors.Errorf("not found implementation for %v, required by those injections: %v", ifaceType, injects)
+			return nil, errors.Errorf("can not find implementation of '%v' required by those injections: %v", ifaceType, injects)
 		case 1:
 			serviceType := candidates[0]
-			service := instances[serviceType]
+			service := cache[serviceType]
 			for _, inject := range injects {
-				inject.inject(service)
+				if err := inject.inject(service); err != nil {
+					return nil, err
+				}
 			}
 
 			if Verbose {
-				fmt.Printf("Inject %v by implementation %v in to %+v\n", ifaceType, service.classPtr, injects)
+				fmt.Printf("Inject '%v' by implementation '%v' in to %+v\n", ifaceType, service.beanDef.classPtr, injects)
 			}
-			beansByType[ifaceType] = service.bean
+			beansByType[ifaceType] = service
 			name := ifaceType.String()
-			beansByName[name] = append(beansByName[name], service.bean)
+			beansByName[name] = append(beansByName[name], service)
 
 		default:
-			return nil, errors.Errorf("found two or more services implemented the same interface %v, services=%v", ifaceType, candidates)
+			return nil, errors.Errorf("found two or more beans implemented the same interface '%v', candidates=%v", ifaceType, candidates)
 		}
 	}
 
-	return &context {
-		instances: scan,
+	ctx := &context {
+		core: scan,
 		beansByName: beansByName,
 		beansByType: beansByType,
-	}, nil
+	}
+	return ctx, nil
 }
 
 
-func (t *context) Beans() []interface{} {
-	return t.instances
+func (t *context) Core() []string {
+	var names []string
+	for name, _ := range t.beansByName {
+		names = append(names, name)
+	}
+	return names
 }
 
 func (t *context) Bean(typ reflect.Type) (interface{}, bool) {
-	bean, ok := t.beansByType[typ]
-	return bean, ok
+	if b, ok := t.beansByType[typ]; ok {
+		return b.obj, true
+	} else {
+		return nil, false
+	}
 }
 
 func (t *context) Lookup(iface string) []interface{} {
-	return t.beansByName[iface]
+	var res []interface{}
+	for _, b := range t.beansByName[iface] {
+		res = append(res, b.obj)
+	}
+	return res
+}
+
+func (t *context) Inject(obj interface{}) error {
+	if obj == nil {
+		return errors.New("null obj is are not allowed")
+	}
+	classPtr := reflect.TypeOf(obj)
+	if classPtr.Kind() != reflect.Ptr {
+		return errors.Errorf("non-pointer instances are not allowed, type %v", classPtr)
+	}
+	if bd, err := t.cache(obj, classPtr); err != nil {
+		return err
+	} else {
+		for _, inject := range bd.fields {
+			if impl, ok := t.beansByType[inject.fieldType]; ok {
+				if err := inject.inject(impl); err != nil {
+					return err
+				}
+			} else {
+				errors.Errorf("implementation not found for field '%s' with type '%v'",  inject.fieldName, inject.fieldType)
+			}
+		}
+	}
+	return nil
+}
+
+func (t *context) cache(instance interface{}, classPtr reflect.Type) (*beanDef, error) {
+	if bd, ok := t.runtimeCache.Load(classPtr); ok {
+		return bd.(*beanDef), nil
+	} else {
+		b, err := investigate(instance, classPtr)
+		if err != nil {
+			return nil, err
+		}
+		t.runtimeCache.Store(classPtr, b.beanDef)
+		return b.beanDef, nil
+	}
 }
 
 func (t *context) Close() error {
 	var err []error
-	for _, service := range t.instances {
+	for _, service := range t.core {
 		if c, ok := service.(Closable); ok {
 			if e := c.Close(); e != nil {
 				err = append(err, e)
@@ -245,4 +262,41 @@ func (t *context) Close() error {
 	default:
 		return errors.Errorf("multiple errors on close, %v", err)
 	}
+}
+
+func investigate(obj interface{}, classPtr reflect.Type) (*bean, error) {
+	var fields []*injection
+	var notImplements []reflect.Type
+	valuePtr := reflect.ValueOf(obj)
+	value := valuePtr.Elem()
+	class := classPtr.Elem()
+	for j := 0; j < class.NumField(); j++ {
+		field := class.Field(j)
+		if field.Anonymous {
+			notImplements = append(notImplements, field.Type)
+		}
+		if field.Tag == "inject" {
+			kind := field.Type.Kind()
+			if kind != reflect.Ptr && kind != reflect.Interface {
+				return nil, errors.Errorf("not a pointer or interface field type '%v' on position %d in %v", field.Type, j, classPtr)
+			}
+			inject := &injection {
+				value:     value,
+				class:     class,
+				fieldNum:  j,
+				fieldName: field.Name,
+				fieldType: field.Type,
+			}
+			fields = append(fields, inject)
+		}
+	}
+	return &bean{
+		obj:           obj,
+		valuePtr:      valuePtr,
+		beanDef:  &beanDef{
+			classPtr:      classPtr,
+			notImplements: notImplements,
+			fields:        fields,
+		},
+	}, nil
 }
