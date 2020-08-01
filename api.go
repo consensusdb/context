@@ -57,6 +57,12 @@ type Context interface {
 
 
 	/**
+		Panic if bean not found
+	 */
+	MustBean(typ reflect.Type) interface{}
+
+
+	/**
 		Lookup registered beans in context by name.
 		The name is the local package plus name of the interface, for example 'app.UserService'
 

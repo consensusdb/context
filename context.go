@@ -200,6 +200,14 @@ func (t *context) Bean(typ reflect.Type) (interface{}, bool) {
 	}
 }
 
+func (t *context) MustBean(typ reflect.Type) interface{} {
+	if bean, ok := t.Bean(typ); ok {
+		return bean
+	} else {
+		panic(fmt.Sprintf("bean not found %v", typ))
+	}
+}
+
 func (t *context) Lookup(iface string) []interface{} {
 	var res []interface{}
 	for _, b := range t.beansByName[iface] {

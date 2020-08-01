@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"log"
 	"os"
+	"reflect"
 	"strconv"
 	"testing"
 )
@@ -50,16 +51,19 @@ func TestCreateEmpty(t *testing.T) {
 
 }
 
+var StorageClass = reflect.TypeOf((*Storage)(nil)).Elem()
 type Storage interface {
 	Load(key string) string
 	Store(key, value string)
 }
 
+var ConfigServiceClass = reflect.TypeOf((*ConfigService)(nil)).Elem()
 type ConfigService interface {
 	GetConfig(key string) string
 	SetConfig(key, value string)
 }
 
+var UserServiceClass = reflect.TypeOf((*UserService)(nil)).Elem()
 type UserService interface {
 	GetUser(user string) string
 	SaveUser(user, details string)
@@ -137,12 +141,14 @@ func TestCreate(t *testing.T) {
 	storageInstance := beans[0].(*storageImpl)
 	require.NotNil(t, storageInstance)
 	require.Equal(t, storageInstance.Logger, logger)
+	require.Equal(t, storageInstance, ctx.MustBean(StorageClass))
 
 	beans = ctx.Lookup("context_test.ConfigService")
 	require.Equal(t, 1, len(beans))
 	configServiceInstance := beans[0].(*configServiceImpl)
 	require.NotNil(t, configServiceInstance)
 	require.Equal(t, configServiceInstance.Storage, storageInstance)
+	require.Equal(t, configServiceInstance, ctx.MustBean(ConfigServiceClass))
 
 	beans = ctx.Lookup("context_test.UserService")
 	require.Equal(t, 1, len(beans))
@@ -150,6 +156,7 @@ func TestCreate(t *testing.T) {
 	require.NotNil(t, userServiceInstance)
 	require.Equal(t, userServiceInstance.Storage, storageInstance)
 	require.Equal(t, userServiceInstance.ConfigService, configServiceInstance)
+	require.Equal(t, userServiceInstance, ctx.MustBean(UserServiceClass))
 
 }
 
@@ -239,5 +246,8 @@ func TestMissingInterfaceBean(t *testing.T) {
 			&struct{ UserService `inject` }{}
 	 */
 	require.Equal(t, 0, len(beans))
+
+	_, ok := ctx.Bean(UserServiceClass)
+	require.False(t, ok)
 
 }
