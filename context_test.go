@@ -134,7 +134,7 @@ func TestCreate(t *testing.T) {
 
 	require.Nil(t, err)
 	require.NotNil(t, ctx)
-	require.Equal(t, 4, len(ctx.Core()))
+	require.Equal(t, 5, len(ctx.Core()))
 
 	beans := ctx.Lookup("context_test.Storage")
 	require.Equal(t, 1, len(beans))
@@ -248,6 +248,8 @@ func TestMissingInterfaceBean(t *testing.T) {
 	require.Equal(t, 0, len(beans))
 
 	_, ok := ctx.Bean(UserServiceClass)
-	require.False(t, ok)
+	require.True(t, ok)
 
 }
+
+

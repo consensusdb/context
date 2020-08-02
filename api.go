@@ -40,7 +40,7 @@ type Context interface {
 		Get list of all registered instances on creation of context with scope 'core'
 	 */
 
-	Core() []string
+	Core() []reflect.Type
 
 	/**
 		Gets obj by type, that is a pointer to the structure or interface.
