@@ -26,15 +26,12 @@ import "reflect"
 
 var Verbose = true
 
-type Closable interface {
-	Close() error
-}
 
 type Context interface {
 	/**
-		Closes all beans that implements this interface in the order ot scan.
+		Destroy all beans that implement interface DisposableBean.
 	 */
-	Closable
+	Close() error
 
 	/**
 		Get list of all registered instances on creation of context with scope 'core'
@@ -90,4 +87,56 @@ type Context interface {
 
 }
 
+/**
+	The bean object would be created after Object() function call.
 
+	ObjectType can be pointer to structure or interface.
+
+	Singleton means that object would be created only once.
+ */
+
+type FactoryBean interface {
+
+	/**
+		Create actual object
+	 */
+	Object() interface{}
+
+	/**
+		Get object interface or pointer on struct
+	 */
+	ObjectType() reflect.Type
+
+	/**
+		Must be a single object in context
+	 */
+	Singleton() bool
+
+}
+
+
+/**
+	Initializing bean context is using to run required method on post-construct injection stage
+ */
+
+type InitializingBean interface {
+
+	/**
+		Runs this method automatically after initializing and injecting context
+	 */
+
+	PostConstruct() error
+
+}
+
+/**
+	This interface uses to select objects that could free resources after closing context
+ */
+type DisposableBean interface {
+
+	/**
+		During close context would be called for each bean in the core.
+	 */
+
+	Destroy() error
+}

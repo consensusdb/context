@@ -153,7 +153,8 @@ func Create(scan... interface{}) (Context, error) {
 	}
 	ctx.registry.beansByName = beansByName
 	ctx.registry.beansByType = beansByType
-	return ctx, nil
+
+	return ctx, ctx.postConstruct()
 }
 
 func errorNoCandidates(pointers map[reflect.Type][]*injection) error {
@@ -226,7 +227,7 @@ func (t *context) Inject(obj interface{}) error {
 					return err
 				}
 			} else {
-				errors.Errorf("implementation not found for field '%s' with type '%v'",  inject.fieldName, inject.fieldType)
+				return errors.Errorf("implementation not found for field '%s' with type '%v'",  inject.fieldName, inject.fieldType)
 			}
 		}
 	}
@@ -265,22 +266,48 @@ func (t *context) cache(instance interface{}, classPtr reflect.Type) (*beanDef, 
 	}
 }
 
-func (t *context) Close() error {
+func (t *context) postConstruct() error {
+	var fallback []DisposableBean
 	var err []error
 	for _, instance := range t.core {
-		if c, ok := instance.obj.(Closable); ok {
-			if e := c.Close(); e != nil {
+		if b, ok := instance.obj.(InitializingBean); ok {
+			if e := b.PostConstruct(); e != nil {
+				err = append(err, e)
+			} else if d, ok := instance.obj.(DisposableBean); ok {
+				fallback = append(fallback, d)
+			}
+		}
+	}
+	if len(err) > 0 {
+		for _, d := range fallback {
+			if e := d.Destroy(); e != nil {
 				err = append(err, e)
 			}
 		}
 	}
+	return multiple(err)
+}
+
+func (t *context) Close() error {
+	var err []error
+	for _, instance := range t.core {
+		if c, ok := instance.obj.(DisposableBean); ok {
+			if e := c.Destroy(); e != nil {
+				err = append(err, e)
+			}
+		}
+	}
+	return multiple(err)
+}
+
+func multiple(err []error) error {
 	switch len(err) {
 	case 0:
 		return nil
 	case 1:
 		return err[0]
 	default:
-		return errors.Errorf("multiple errors on close, %v", err)
+		return errors.Errorf("multiple errors, %v", err)
 	}
 }
 
