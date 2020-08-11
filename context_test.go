@@ -26,6 +26,7 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"sync"
 	"testing"
 )
 
@@ -71,14 +72,21 @@ type UserService interface {
 
 type storageImpl struct {
 	Logger  *log.Logger `inject`
+	internal sync.Map
 }
 
 func (t *storageImpl) Load(key string) string {
 	t.Logger.Printf("Load %s\n", key)
-	return "true"
+	if val, ok := t.internal.Load(key); ok {
+		return val.(string)
+	} else {
+		return ""
+	}
 }
+
 func (t *storageImpl) Store(key, value string) {
 	t.Logger.Printf("Store %s, %s\n", key, value)
+	t.internal.Store(key, value)
 }
 
 type configServiceImpl struct {
@@ -114,6 +122,11 @@ func (t *userServiceImpl) allowWrites() bool {
 		return false
 	}
 	return b
+}
+
+func (t *userServiceImpl) PostConstruct() error {
+	t.SetConfig("allowWrites", "true")
+	return nil
 }
 
 func TestCreate(t *testing.T) {
@@ -252,4 +265,35 @@ func TestMissingInterfaceBean(t *testing.T) {
 
 }
 
+func TestRequestMultithreading(t *testing.T) {
 
+	context.Verbose = true
+	logger := log.New(os.Stderr, "context: ", log.LstdFlags)
+
+	var ctx, err = context.Create(
+		logger,
+		&storageImpl{},
+		&configServiceImpl{},
+		&userServiceImpl{},
+		&struct{ UserService `inject` }{},  // could be used by runtime injects
+	)
+	require.Nil(t, err)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			controller := &requestScope {
+				requestParams: fmt.Sprintf("firstName=Alex%d", i),
+			}
+			err = ctx.Inject(controller)
+			require.Nil(t, err)
+			username := fmt.Sprintf("user%d", i)
+			controller.routeAddUser(username)
+		}(i)
+	}
+
+	wg.Wait()
+
+}

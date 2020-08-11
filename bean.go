@@ -28,28 +28,41 @@ import (
 @author Alex Shvid
 */
 
+
+type injectionDef struct {
+
+	/**
+	Class of that struct
+	*/
+	class     reflect.Type
+	/**
+	Field number of that struct
+	*/
+	fieldNum  int
+	/**
+	Field name where injection is going to be happen
+	*/
+	fieldName string
+	/**
+	Type of the field that is going to be injected
+	*/
+	fieldType reflect.Type
+
+}
+
 type injection struct {
 	/**
 		Refect value of the struct where injection is going to be happen
 	 */
 	value     reflect.Value
+
 	/**
-		Class of that struct
+		Injection information
 	 */
-	class     reflect.Type
-	/**
-		Field number of that struct
-	 */
-	fieldNum  int
-	/**
-		Field name where injection is going to be happen
-	*/
-	fieldName string
-	/**
-		Type of the field that is going to be injected
-	*/
-	fieldType reflect.Type
+	injectionDef  *injectionDef
+
 }
+
 
 type beanDef struct {
 	/**
@@ -68,7 +81,7 @@ type beanDef struct {
 	/**
 		Fields that are going to be injected
 	 */
-	fields        []*injection
+	fields        []*injectionDef
 }
 
 type bean struct {
@@ -103,7 +116,12 @@ func (t *beanDef) implements(ifaceType reflect.Type) bool {
 	Inject value in to the field by using reflection
  */
 func (t *injection) inject(impl *bean) error {
-	field := t.value.Field(t.fieldNum)
+	return t.injectionDef.inject(&t.value, impl)
+}
+
+
+func (t *injectionDef) inject(value *reflect.Value, impl *bean) error {
+	field := value.Field(t.fieldNum)
 	if field.CanSet() {
 		field.Set(impl.valuePtr)
 		return nil
@@ -115,7 +133,12 @@ func (t *injection) inject(impl *bean) error {
 /**
 	User friendly information about class and field
  */
+
 func (t *injection) String() string {
+	return t.injectionDef.String()
+}
+
+func (t *injectionDef) String() string {
 	return fmt.Sprintf(" %v->%s ", t.class, t.fieldName)
 }
 

@@ -80,17 +80,20 @@ func Create(scan... interface{}) (Context, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, inject := range bean.beanDef.fields {
-			if Verbose {
-				fmt.Printf("	Field %v\n", inject.fieldType)
-			}
-			switch inject.fieldType.Kind() {
-			case reflect.Ptr:
-				pointers[inject.fieldType] = append(pointers[inject.fieldType], inject)
-			case reflect.Interface:
-				interfaces[inject.fieldType] = append(interfaces[inject.fieldType], inject)
-			default:
-				return nil, errors.Errorf("injecting not a pointer or interface on field type '%v' at position %d in %v", inject.fieldType, i, classPtr)
+		if len(bean.beanDef.fields) > 0 {
+			value := bean.valuePtr.Elem()
+			for _, injectDef := range bean.beanDef.fields {
+				if Verbose {
+					fmt.Printf("	Field %v\n", injectDef.fieldType)
+				}
+				switch injectDef.fieldType.Kind() {
+				case reflect.Ptr:
+					pointers[injectDef.fieldType] = append(pointers[injectDef.fieldType], &injection{value, injectDef})
+				case reflect.Interface:
+					interfaces[injectDef.fieldType] = append(interfaces[injectDef.fieldType], &injection{value, injectDef})
+				default:
+					return nil, errors.Errorf("injecting not a pointer or interface on field type '%v' at position %d in %v", injectDef.fieldType, i, classPtr)
+				}
 			}
 		}
 		core[classPtr] = bean
@@ -218,12 +221,14 @@ func (t *context) Inject(obj interface{}) error {
 	if classPtr.Kind() != reflect.Ptr {
 		return errors.Errorf("non-pointer instances are not allowed, type %v", classPtr)
 	}
+	valuePtr := reflect.ValueOf(obj)
+	value := valuePtr.Elem()
 	if bd, err := t.cache(obj, classPtr); err != nil {
 		return err
 	} else {
 		for _, inject := range bd.fields {
 			if impl, ok := t.getBean(inject.fieldType); ok {
-				if err := inject.inject(impl); err != nil {
+				if err := inject.inject(&value, impl); err != nil {
 					return err
 				}
 			} else {
@@ -312,10 +317,9 @@ func multiple(err []error) error {
 }
 
 func investigate(obj interface{}, classPtr reflect.Type) (*bean, error) {
-	var fields []*injection
+	var fields []*injectionDef
 	var notImplements []reflect.Type
 	valuePtr := reflect.ValueOf(obj)
-	value := valuePtr.Elem()
 	class := classPtr.Elem()
 	for j := 0; j < class.NumField(); j++ {
 		field := class.Field(j)
@@ -327,14 +331,13 @@ func investigate(obj interface{}, classPtr reflect.Type) (*bean, error) {
 			if kind != reflect.Ptr && kind != reflect.Interface {
 				return nil, errors.Errorf("not a pointer or interface field type '%v' on position %d in %v", field.Type, j, classPtr)
 			}
-			inject := &injection {
-				value:     value,
+			injectDef := &injectionDef {
 				class:     class,
 				fieldNum:  j,
 				fieldName: field.Name,
 				fieldType: field.Type,
 			}
-			fields = append(fields, inject)
+			fields = append(fields, injectDef)
 		}
 	}
 	return &bean{
